@@ -50,6 +50,46 @@ const gazebo::common::Time GGA_STAMP_OFFSET = gazebo::common::Time(0, 0);
 const gazebo::common::Time RMC_STAMP_OFFSET = gazebo::common::Time(0, 5000000);
 const gazebo::common::Time HDT_STAMP_OFFSET = gazebo::common::Time(0, 5000000);
 
+bool isPointInPolygon(const Eigen::Vector2d & point, const std::vector<Eigen::Vector2d> & polygon)
+{
+  int n = polygon.size();
+  bool inside = false;
+
+  for (int i = 0; i < n; i++) {
+    Eigen::Vector2d p1 = polygon[i];
+    Eigen::Vector2d p2 = polygon[(i + 1) % n];     // Le prochain point, boucle au premier
+
+    // Vérifier si le point est sur un des sommets
+    if ((p1.y() == point.y() && p1.x() == point.x()) ||
+      (p2.y() == point.y() && p2.x() == point.x()))
+    {
+      return true;       // Le point est exactement sur un sommet
+    }
+
+    // Vérifier si le segment croise l'axe horizontal passant par le point
+    if ((p1.y() > point.y()) != (p2.y() > point.y())) {
+      // Calculer la coordonnée x du point d'intersection du segment avec l'axe horizontal
+      double intersectX = (p2.x() - p1.x()) * (point.y() - p1.y()) / (p2.y() - p1.y()) + p1.x();
+      if (point.x() < intersectX) {
+        inside = !inside;         // Inverser l'état d'intérieur
+      }
+    }
+  }
+  return inside;
+}
+
+bool isPointInAPolygon(
+  const Eigen::Vector2d & point,
+  const std::vector<std::vector<Eigen::Vector2d>> & polygons)
+{
+  for (const auto & polygon:polygons) {
+    if (isPointInPolygon(point, polygon)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 namespace romea
@@ -85,6 +125,9 @@ public:
   /// Event triggered when sensor updates
   gazebo::event::ConnectionPtr sensor_update_event_;
 
+  /// sheds
+  std::vector<std::vector<Eigen::Vector2d>> sheds_;
+
   /// Publish latest gps data to ROS
   void OnUpdate();
 };
@@ -103,6 +146,15 @@ void GazeboRosGpsSensor::Load(gazebo::sensors::SensorPtr _sensor, sdf::ElementPt
   //  impl_->ros_node_ = gazebo_ros::Node::Get(_sdf, _sensor);
   impl_->ros_node_ = gazebo_ros::Node::Get(_sdf);
 
+  impl_->sheds_.resize(2);
+  impl_->sheds_[0].push_back(Eigen::Vector2d(3.434608953, 46.34009787));
+  impl_->sheds_[0].push_back(Eigen::Vector2d(3.434476524, 46.34034087));
+  impl_->sheds_[0].push_back(Eigen::Vector2d(3.434091943, 46.34024158));
+  impl_->sheds_[0].push_back(Eigen::Vector2d(3.434220698, 46.33999756));
+  impl_->sheds_[1].push_back(Eigen::Vector2d(3.434968908, 46.34022093));
+  impl_->sheds_[1].push_back(Eigen::Vector2d(3.435758558, 46.34042847));
+  impl_->sheds_[1].push_back(Eigen::Vector2d(3.435642186, 46.34064096));
+  impl_->sheds_[1].push_back(Eigen::Vector2d(3.434852482, 46.34043343));
 
   // Get QoS profiles
   const gazebo_ros::QoS & qos = impl_->ros_node_->get_qos();
@@ -194,61 +246,64 @@ void GazeboRosGpsSensorPrivate::OnUpdate()
   double v_north = sensor_->VelocityNorth();
   double v_up = sensor_->VelocityUp();
 
-  core::GGAFrame gga_frame;
-  gga_frame.fixTime = core::FixTime(gga_stamp.sec, gga_stamp.nanosec);
-  gga_frame.talkerId = core::TalkerId::GP;
-  gga_frame.latitude = core::Latitude(latitude / 180. * M_PI);
-  gga_frame.longitude = core::Longitude(longitude / 180. * M_PI);
-  gga_frame.altitudeAboveGeoid = altitude;
-  gga_frame.fixQuality = core::FixQuality::SIMULATION_FIX;
-  gga_frame.geoidHeight = 0;
-  gga_frame.horizontalDilutionOfPrecision = DEFAULT_DHOP;
-  gga_frame.numberSatellitesUsedToComputeFix = 0;
-  nmea_gga_sentence_msg_->sentence = gga_frame.toNMEA();
-  nmea_gga_sentence_msg_->header.stamp = gga_stamp;
-  nmea_sentence_pub_->publish(*nmea_gga_sentence_msg_);
+  if (!isPointInAPolygon(Eigen::Vector2d(longitude, latitude), sheds_)) {
 
-  auto rmc_stamp = gazebo_ros::Convert<builtin_interfaces::msg::Time>(
-    sensor_stamp + RMC_STAMP_OFFSET);
+    core::GGAFrame gga_frame;
+    gga_frame.fixTime = core::FixTime(gga_stamp.sec, gga_stamp.nanosec);
+    gga_frame.talkerId = core::TalkerId::GP;
+    gga_frame.latitude = core::Latitude(latitude / 180. * M_PI);
+    gga_frame.longitude = core::Longitude(longitude / 180. * M_PI);
+    gga_frame.altitudeAboveGeoid = altitude;
+    gga_frame.fixQuality = core::FixQuality::SIMULATION_FIX;
+    gga_frame.geoidHeight = 0;
+    gga_frame.horizontalDilutionOfPrecision = DEFAULT_DHOP;
+    gga_frame.numberSatellitesUsedToComputeFix = 0;
+    nmea_gga_sentence_msg_->sentence = gga_frame.toNMEA();
+    nmea_gga_sentence_msg_->header.stamp = gga_stamp;
+    nmea_sentence_pub_->publish(*nmea_gga_sentence_msg_);
 
-  core::RMCFrame rmc_frame;
-  rmc_frame.fixTime = core::FixTime(rmc_stamp.sec, rmc_stamp.nanosec);
-  rmc_frame.status = core::RMCFrame::Status::Void;
-  rmc_frame.talkerId = core::TalkerId::GP;
-  rmc_frame.latitude = core::Latitude(latitude / 180. * M_PI);
-  rmc_frame.longitude = core::Longitude(longitude / 180. * M_PI);
-  rmc_frame.trackAngleTrue = M_PI_2 - std::atan2(v_north, v_east);
-  rmc_frame.speedOverGroundInMeterPerSecond = std::sqrt(v_east * v_east + v_north * v_north);
-  rmc_frame.fixQuality = core::FixQuality::SIMULATION_FIX;
-  nmea_rmc_sentence_msg_->sentence = rmc_frame.toNMEA();
-  nmea_rmc_sentence_msg_->header.stamp = rmc_stamp;
-  nmea_sentence_pub_->publish(*nmea_rmc_sentence_msg_);
+    auto rmc_stamp = gazebo_ros::Convert<builtin_interfaces::msg::Time>(
+      sensor_stamp + RMC_STAMP_OFFSET);
 
-  if (dual_antenna_) {
-    auto hdt_stamp = gazebo_ros::Convert<builtin_interfaces::msg::Time>(
-      sensor_stamp + HDT_STAMP_OFFSET);
+    core::RMCFrame rmc_frame;
+    rmc_frame.fixTime = core::FixTime(rmc_stamp.sec, rmc_stamp.nanosec);
+    rmc_frame.status = core::RMCFrame::Status::Void;
+    rmc_frame.talkerId = core::TalkerId::GP;
+    rmc_frame.latitude = core::Latitude(latitude / 180. * M_PI);
+    rmc_frame.longitude = core::Longitude(longitude / 180. * M_PI);
+    rmc_frame.trackAngleTrue = M_PI_2 - std::atan2(v_north, v_east);
+    rmc_frame.speedOverGroundInMeterPerSecond = std::sqrt(v_east * v_east + v_north * v_north);
+    rmc_frame.fixQuality = core::FixQuality::SIMULATION_FIX;
+    nmea_rmc_sentence_msg_->sentence = rmc_frame.toNMEA();
+    nmea_rmc_sentence_msg_->header.stamp = rmc_stamp;
+    nmea_sentence_pub_->publish(*nmea_rmc_sentence_msg_);
 
-    core::HDTFrame hdt_frame;
-    hdt_frame.talkerId = core::TalkerId::GP;
-    hdt_frame.heading = core::between0And2Pi(
-      M_PI_2 - (sensor_->Pose() + sensor_parent_link_->WorldPose()).Yaw());
-    hdt_frame.trueNorth = true;
-    nmea_hdt_sentence_msg_->header.stamp = hdt_stamp;
-    nmea_hdt_sentence_msg_->sentence = hdt_frame.toNMEA();
-    nmea_sentence_pub_->publish(*nmea_hdt_sentence_msg_);
+    if (dual_antenna_) {
+      auto hdt_stamp = gazebo_ros::Convert<builtin_interfaces::msg::Time>(
+        sensor_stamp + HDT_STAMP_OFFSET);
+
+      core::HDTFrame hdt_frame;
+      hdt_frame.talkerId = core::TalkerId::GP;
+      hdt_frame.heading = core::between0And2Pi(
+        M_PI_2 - (sensor_->Pose() + sensor_parent_link_->WorldPose()).Yaw());
+      hdt_frame.trueNorth = true;
+      nmea_hdt_sentence_msg_->header.stamp = hdt_stamp;
+      nmea_hdt_sentence_msg_->sentence = hdt_frame.toNMEA();
+      nmea_sentence_pub_->publish(*nmea_hdt_sentence_msg_);
+    }
+
+    fix_msg_->header.stamp = gga_stamp;
+    fix_msg_->latitude = latitude;
+    fix_msg_->longitude = longitude;
+    fix_msg_->altitude = altitude;
+    fix_pub_->publish(*fix_msg_);
+
+    vel_msg_->header.stamp = rmc_stamp;
+    vel_msg_->twist.linear.x = v_east;
+    vel_msg_->twist.linear.y = v_north;
+    vel_msg_->twist.linear.z = v_up;
+    vel_pub_->publish(*vel_msg_);
   }
-
-  fix_msg_->header.stamp = gga_stamp;
-  fix_msg_->latitude = latitude;
-  fix_msg_->longitude = longitude;
-  fix_msg_->altitude = altitude;
-  fix_pub_->publish(*fix_msg_);
-
-  vel_msg_->header.stamp = rmc_stamp;
-  vel_msg_->twist.linear.x = v_east;
-  vel_msg_->twist.linear.y = v_north;
-  vel_msg_->twist.linear.z = v_up;
-  vel_pub_->publish(*vel_msg_);
 }
 
 GZ_REGISTER_SENSOR_PLUGIN(GazeboRosGpsSensor)
